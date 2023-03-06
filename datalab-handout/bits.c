@@ -134,6 +134,7 @@ NOTES:
 
 
 #endif
+#define equal(x, y) (!((x) ^ (y)))
 //1
 /* 
  * bitXor - x^y using only ~ and & 
@@ -143,7 +144,7 @@ NOTES:
  *   Rating: 1
  */
 int bitXor(int x, int y) {
-  return 2;
+    return ~(~x&~y)&~(x&y);
 }
 /* 
  * tmin - return minimum two's complement integer 
@@ -164,20 +165,21 @@ int tmin(void) {
  *   Rating: 1
  */
 int isTmax(int x) {
-
-    return x<<1 ^ 0xffffffff;
+    int y = x << 1;
+    return (y ^ 1) && x != -1;
 }
 /* 
  * allOddBits - return 1 if all odd-numbered bits in word set to 1
- *   where bits are numbered from 0 (least significant) to 31 (most significant)
+ *   where bits are numbered from 0 (least significant) to 31 (most significant) which means that it definitely has 32 bits
  *   Examples allOddBits(0xFFFFFFFD) = 0, allOddBits(0xAAAAAAAA) = 1
  *   Legal ops: ! ~ & ^ | + << >>
  *   Max ops: 12
  *   Rating: 2
  */
 int allOddBits(int x) {
-
-  return 2;
+  int mask = 0xaaaa; /* construct a mask with all odd bits in word set to 1 and even bits set to 0 */
+  mask = (mask << 16) + mask;
+  return equal((x & mask), mask);
 }
 /* 
  * negate - return -x 
@@ -187,7 +189,11 @@ int allOddBits(int x) {
  *   Rating: 2
  */
 int negate(int x) {
-  return 2;
+  /* a + ~a = -1; // Complement number plus rules;
+   * a + -a = 0;
+   * -a = ~a + 1;
+   * */
+  return ~x + 1;
 }
 //3
 /* 
