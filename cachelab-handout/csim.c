@@ -246,7 +246,7 @@ void load_data(char *ins) {
     unsigned addr = parse_addr(ins);
     int index = parse_index(addr);
     int id = parse_id(addr);
-    printf("%s\n",ins);
+    printf("%s  index = %d\n",ins, index);
     int rtn = search_group(index, id);
     info_msg(rtn, ins);
 }
