@@ -3,14 +3,25 @@
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
-#define MAX_REQUEST 100
+#define MAX_HEADER_LINE 100
+#define PORT_SIZE 7
+#define HOST_SIZE 100
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
+static const char *connection_hdr = "Connection: close\r\n";
+static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
 static const char *http_version = "HTTP/1.0";
+static const char *conn_str = "Connection";
+static const char *pxyconn_str = "Proxy-Connection";
+static const char *usragent_str = "User-Agent";
+
 
 void doit(int fd);
-void read_requesthdrs(rio_t *rp);
+int constct_req(rio_t *rp, char *user_request_hdr[], int *idx);
+void send_request(int fd, char *header[],int linesize);
+void handle_response(int server_fd, int client_fd);
+void uri2path(char *uri, char ** path);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
 void get_filetype(char *filename, char *filetype);
@@ -20,8 +31,6 @@ void clienterror(int fd, char *cause, char *errnum,
 
 int main(int argc, char **argv) 
 {
-    printf("%s", user_agent_hdr);
-
     int listenfd, connfd;
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
@@ -52,30 +61,41 @@ int main(int argc, char **argv)
 /* $begin doit */
 void doit(int fd) 
 {
-    int is_static;
     int request_idx = 0;
-    struct stat sbuf;
-    char *user_request_hdr[100];
+    int server_fd;
+    char *user_request_hdr[MAX_HEADER_LINE];
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE], request_line[MAXLINE];
-    char filename[MAXLINE], cgiargs[MAXLINE];
+    char *path;
     rio_t rio;
 
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
-    if (!Rio_readlineb(&rio, buf, MAXLINE))  //line:netp:doit:readrequest Read first line
+    if (!Rio_readlineb(&rio, buf, MAXLINE))  // Read HTTP first line
         return;
     printf("%s", buf);
-    sscanf(buf, "%s %s %s", method, uri, version);       //line:netp:doit:parserequest
-    if (strcasecmp(method, "GET")) {                     //line:netp:doit:beginrequesterr
+    sscanf(buf, "%s %s %s", method, uri, version);       // parserequest
+
+    if (strcasecmp(method, "GET")) {                     // beginrequesterr
         clienterror(fd, method, "501", "Not Implemented",
                     "Tiny does not implement this method");
         return;
-    }                                                    //line:netp:doit:endrequesterr
+    }                             
     
-    sprintf(request_line, "%s %s %s\r\n", method, uri, http_version);
-    printf("%s", request_line);
-    read_requesthdrs(&rio);                              //line:netp:doit:readrequesthdrs  Read the rest of the line
+    uri2path(uri, &path);
+    if (path == NULL)
+        path = uri;
+    sprintf(request_line, "%s %s %s\r\n", method, path, http_version); // http1.0 only
+    user_request_hdr[request_idx++] = request_line; // request line modified
 
+    server_fd = constct_req(&rio, user_request_hdr, &request_idx);              // readrequesthdrs & construct request header
+    printf("browser's new request \n");
+    for (int i = 0; i < request_idx; i++) {
+        printf("%s", user_request_hdr[i]);
+    }
+
+    send_request(server_fd, user_request_hdr, request_idx);
+
+#if 0
     /* Parse URI from GET request */
     is_static = parse_uri(uri, filename, cgiargs);       //line:netp:doit:staticcheck
     if (stat(filename, &sbuf) < 0) {                     //line:netp:doit:beginnotfound
@@ -100,26 +120,78 @@ void doit(int fd)
 	}
 	serve_dynamic(fd, filename, cgiargs);            //line:netp:doit:servedynamic
     }
+#endif
+    handle_response(server_fd, fd);
+    
 }
 /* $end doit */
 
 /*
- * read_requesthdrs - read HTTP request headers
+ * read_requesthdrs - read HTTP request headers and construct request header
+ * return connect fd of coneection to target server
  */
 /* $begin read_requesthdrs */
-void read_requesthdrs(rio_t *rp) 
+int  constct_req(rio_t *rp, char *user_request_hdr[], int *idx)
 {
     char buf[MAXLINE];
+    char host[HOST_SIZE];
+    char port[PORT_SIZE];
+    char *split_loc;
+    int flag_conn = 0, flag_pxyconn = 0, flag_agent = 0, flag_host = 0;
+    int conn_fd;
 
     Rio_readlineb(rp, buf, MAXLINE);
     printf("%s", buf);
+    user_request_hdr[*idx] = (char *)malloc(sizeof(char)*sizeof(buf));
+    strcpy(user_request_hdr[(*idx)++], buf);
+
+    split_loc = strchr(buf + 6, ':');   // split host:port by ":"
+    if (split_loc != NULL){
+        *split_loc = '\0';
+        strcpy(host, buf + 6);
+        strncpy(port, split_loc+1, strlen(split_loc+1)-2);  // remove '\r\n'
+    }
+
+    user_request_hdr[(*idx)++] = user_agent_hdr;   
+    user_request_hdr[(*idx)++] = connection_hdr;
+    user_request_hdr[(*idx)++] = proxy_connection_hdr;
     while(strcmp(buf, "\r\n")) {          //line:netp:readhdrs:checkterm
 	Rio_readlineb(rp, buf, MAXLINE);
-	printf("%s", buf);
+    if (!flag_agent && !strncasecmp(buf, usragent_str, strlen(usragent_str))) {
+        flag_agent = 1; // judge once
+        continue; // ignore originial user agent value
     }
-    return;
+
+    if (!flag_conn && !strncasecmp(buf, conn_str, strlen(conn_str))) {
+        flag_conn = 1;  // judge once
+        continue;  // ignore original connection value
+    } 
+
+    if (!flag_pxyconn && !strncasecmp(buf, pxyconn_str, strlen(pxyconn_str))) {
+        flag_pxyconn = 1;  // judge once
+        continue;  // ignore original pxyconnection value
+    }
+
+    user_request_hdr[*idx] = (char *)malloc(sizeof(char)*sizeof(buf));
+    strcpy(user_request_hdr[(*idx)++], buf);
+    }
+    conn_fd = Open_clientfd(host, port);
+    return conn_fd;
 }
 /* $end read_requesthdrs */
+
+void uri2path(char *uri, char **path)
+{
+    char *start = strstr(uri, "://");
+    if (start != NULL) {
+        start += 3; // skip "://" part
+    } else {
+        start = uri;
+    }
+
+    // start location of path: after first slash
+    *path = strchr(start, '/');
+}
 
 /*
  * parse_uri - parse URI into filename and CGI args
@@ -152,6 +224,35 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
     }
 }
 /* $end parse_uri */
+
+void send_request(int fd, char *header[], int linesize)
+{
+    for (int i = 0; i < linesize; i++)
+        Rio_writen(fd, header[i], strlen(header[i]));
+}
+
+void handle_response(int server_fd, int client_fd)
+{
+    rio_t rio;
+    int linesize = 0, objsize;
+    char buf[MAXLINE];
+    char obj[MAX_OBJECT_SIZE];
+    char *header[MAX_HEADER_LINE];
+
+    Rio_readinitb(&rio, server_fd);
+    while(strcmp(buf, "\r\n")) {          // Read response header
+	Rio_readlineb(&rio, buf, MAXLINE);
+    header[linesize] = (char *)malloc(sizeof(char) * strlen(buf));
+    strcpy(header[linesize++], buf);
+    }
+
+    objsize = Rio_readnb(&rio, obj, MAX_OBJECT_SIZE);
+
+    for (int i = 0; i < linesize; i+=1)
+        Rio_writen(client_fd, header[i], strlen(header[i]));
+    Rio_writen(client_fd, obj, objsize);
+    Close(server_fd);
+}
 
 /*
  * serve_static - copy a file back to the client 
