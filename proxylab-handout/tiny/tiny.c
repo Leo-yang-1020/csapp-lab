@@ -82,7 +82,7 @@ void doit(int fd)
 			"Tiny couldn't read the file");
 	    return;
 	}
-	serve_static(fd, filename, sbuf.st_size);        //line:netp:doit:servestatic
+	    serve_static(fd, filename, sbuf.st_size);       //line:netp:doit:servestatic
     }
     else { /* Serve dynamic content */
 	if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) { //line:netp:doit:executable

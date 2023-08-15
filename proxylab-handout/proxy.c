@@ -1,33 +1,4 @@
-#include <stdio.h>
-#include "csapp.h"
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
-#define MAX_HEADER_LINE 100
-#define PORT_SIZE 7
-#define HOST_SIZE 100
-
-/* You won't lose style points for including this long line in your code */
-static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
-static const char *connection_hdr = "Connection: close\r\n";
-static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
-static const char *http_version = "HTTP/1.0";
-static const char *conn_str = "Connection";
-static const char *pxyconn_str = "Proxy-Connection";
-static const char *usragent_str = "User-Agent";
-
-
-void doit(int fd);
-int constct_req(rio_t *rp, char *user_request_hdr[], int *idx);
-void send_request(int fd, char *header[],int linesize);
-void handle_response(int server_fd, int client_fd);
-void uri2path(char *uri, char ** path);
-int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
-void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
-void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg);
+#include "proxy.h"
 
 int main(int argc, char **argv) 
 {
@@ -43,6 +14,7 @@ int main(int argc, char **argv)
     }
 
     listenfd = Open_listenfd(argv[1]);
+   #if 0
     while (1) {
 	clientlen = sizeof(clientaddr);
 	connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
@@ -52,11 +24,17 @@ int main(int argc, char **argv)
 	doit(connfd);                                             //line:netp:tiny:doit
 	Close(connfd);                                            //line:netp:tiny:close
     }
+    #endif
+    loop(listenfd);
 }
-/* $end tinymain */
 
 /*
  * doit - handle one HTTP request/response transaction
+ *  1. read http request from client
+ *  2. generate http request to server
+ *  3. send http request to server
+ *  4. receive http response from server
+ *  5. send response back to client
  */
 /* $begin doit */
 void doit(int fd) 
@@ -64,78 +42,95 @@ void doit(int fd)
     int request_idx = 0;
     int server_fd;
     char *user_request_hdr[MAX_HEADER_LINE];
-    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE], request_line[MAXLINE];
+    char buf[MAXLINE];
+    char host[HOST_SIZE];
+    char port[PORT_SIZE];
     char *path;
     rio_t rio;
 
-    /* Read request line and headers */
     Rio_readinitb(&rio, fd);
-    if (!Rio_readlineb(&rio, buf, MAXLINE))  // Read HTTP first line
-        return;
-    printf("%s", buf);
-    sscanf(buf, "%s %s %s", method, uri, version);       // parserequest
 
-    if (strcasecmp(method, "GET")) {                     // beginrequesterr
-        clienterror(fd, method, "501", "Not Implemented",
-                    "Tiny does not implement this method");
-        return;
-    }                             
-    
-    uri2path(uri, &path);
-    if (path == NULL)
-        path = uri;
-    sprintf(request_line, "%s %s %s\r\n", method, path, http_version); // http1.0 only
-    user_request_hdr[request_idx++] = request_line; // request line modified
+    if (constct_reqline(&rio, user_request_hdr, &request_idx, fd) == ERROR)
+        return ;
 
-    server_fd = constct_req(&rio, user_request_hdr, &request_idx);              // readrequesthdrs & construct request header
+    constct_req(&rio, user_request_hdr, &request_idx, host, port);              // read & construct request header, establish connection
     printf("browser's new request \n");
     for (int i = 0; i < request_idx; i++) {
         printf("%s", user_request_hdr[i]);
     }
 
+    server_fd = connect_to_srv(host, port);
     send_request(server_fd, user_request_hdr, request_idx);
 
-#if 0
-    /* Parse URI from GET request */
-    is_static = parse_uri(uri, filename, cgiargs);       //line:netp:doit:staticcheck
-    if (stat(filename, &sbuf) < 0) {                     //line:netp:doit:beginnotfound
-	clienterror(fd, filename, "404", "Not found",
-		    "Tiny couldn't find this file");
-	return;
-    }                                                    //line:netp:doit:endnotfound
-
-    if (is_static) { /* Serve static content */          
-	if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) { //line:netp:doit:readable
-	    clienterror(fd, filename, "403", "Forbidden",
-			"Tiny couldn't read the file");
-	    return;
-	}
-	serve_static(fd, filename, sbuf.st_size);       //line:netp:doit:servestatic
-    }
-    else { /* Serve dynamic content */
-	if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) { //line:netp:doit:executable
-	    clienterror(fd, filename, "403", "Forbidden",
-			"Tiny couldn't run the CGI program");
-	    return;
-	}
-	serve_dynamic(fd, filename, cgiargs);            //line:netp:doit:servedynamic
-    }
-#endif
     handle_response(server_fd, fd);
-    
+    Close(server_fd);
 }
 /* $end doit */
+
+int handle_client(int fd, char **user_request_hdr, int *request_idx)
+{
+    int serverfd;
+    char buf[MAXLINE];
+    char host[HOST_SIZE];
+    char port[PORT_SIZE];
+    char *path;
+    rio_t rio;
+
+    Rio_readinitb(&rio, fd);
+
+    if (constct_reqline(&rio, user_request_hdr, request_idx, fd) == ERROR)
+        return ERROR;
+
+    constct_req(&rio, user_request_hdr, request_idx, host, port);              // read & construct request header, establish connection
+    printf("browser's new request \n");
+    for (int i = 0; i < *request_idx; i++) {
+        printf("%s", user_request_hdr[i]);
+    }
+    serverfd = connect_to_srv(host, port);
+    return serverfd;
+}
+
+int constct_reqline(rio_t *rp, char *user_request_hdr[], int *idx, int fd)
+{
+    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE], request_line[MAXLINE];
+    char *path;
+    if (!Rio_readlineb(rp, buf, MAXLINE))  // Read HTTP first line
+        return ERROR;
+    sscanf(buf, "%s %s %s", method, uri, version);       // parse request line
+
+    if (strcasecmp(method, "GET")) {                     // beginrequesterr
+        clienterror(fd, method, "501", "Not Implemented",
+                    "Tiny does not implement this method");
+        return ERROR;
+    }           
+
+    uri2path(uri, &path);
+    if (path == NULL)
+        path = uri;
+    sprintf(request_line, "%s %s %s\r\n", method, path, http_version); // http1.0 only
+    user_request_hdr[*idx] = (char *)malloc(sizeof(char)*sizeof(request_line));
+    strcpy(user_request_hdr[(*idx)++], request_line);
+    return 0;
+}
+
+/*
+ *  Connect to target server
+*/
+int connect_to_srv(char *host, char *port)
+{
+    int conn_fd;
+    conn_fd = Open_clientfd(host, port);
+    return conn_fd;
+}
 
 /*
  * read_requesthdrs - read HTTP request headers and construct request header
  * return connect fd of coneection to target server
  */
 /* $begin read_requesthdrs */
-int  constct_req(rio_t *rp, char *user_request_hdr[], int *idx)
+void  constct_req(rio_t *rp, char *user_request_hdr[], int *idx, char *host, char *port)
 {
     char buf[MAXLINE];
-    char host[HOST_SIZE];
-    char port[PORT_SIZE];
     char *split_loc;
     int flag_conn = 0, flag_pxyconn = 0, flag_agent = 0, flag_host = 0;
     int conn_fd;
@@ -175,8 +170,7 @@ int  constct_req(rio_t *rp, char *user_request_hdr[], int *idx)
     user_request_hdr[*idx] = (char *)malloc(sizeof(char)*sizeof(buf));
     strcpy(user_request_hdr[(*idx)++], buf);
     }
-    conn_fd = Open_clientfd(host, port);
-    return conn_fd;
+    return ;
 }
 /* $end read_requesthdrs */
 
@@ -231,6 +225,11 @@ void send_request(int fd, char *header[], int linesize)
         Rio_writen(fd, header[i], strlen(header[i]));
 }
 
+/* 
+ *  1. Read response from server
+ *  2. Send response back to client
+ */
+
 void handle_response(int server_fd, int client_fd)
 {
     rio_t rio;
@@ -251,7 +250,6 @@ void handle_response(int server_fd, int client_fd)
     for (int i = 0; i < linesize; i+=1)
         Rio_writen(client_fd, header[i], strlen(header[i]));
     Rio_writen(client_fd, obj, objsize);
-    Close(server_fd);
 }
 
 /*
