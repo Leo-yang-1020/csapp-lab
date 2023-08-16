@@ -1,120 +1,138 @@
-#include "csapp.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include "proxy.h"
 
 #define MAX_EVENTS 10
 #define BUFFER_SIZE 1024
+#define SERVER 1
+#define CLIENT 2
+#define LISTENER 3
 
-int main() {
-    int listen_sock, conn_sock, epoll_fd, event_count, i;
-    struct epoll_event event, events[MAX_EVENTS];
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len;
-    char buffer[BUFFER_SIZE];
-
-    // 创建监听套接字
-    listen_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_sock == -1) {
-        perror("Error creating socket");
-        exit(EXIT_FAILURE);
+int epoll_loop(int listenfd)
+{
+    struct epoll_event events[MAX_EVENTS];
+    int epollfd, event_count, i, fd, type;
+    flow *flow;
+    epollfd = epoll_create1(0);
+    if (epollfd == -1) {
+        perror("Error creating epoll\n");
+        return -1;
     }
 
-    // 设置服务器地址
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(8888);
-
-    // 绑定监听套接字到指定地址和端口
-    if (bind(listen_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Error binding");
-        exit(EXIT_FAILURE);
-    }
-
-    // 开始监听连接
-    if (listen(listen_sock, SOMAXCONN) == -1) {
-        perror("Error listening");
-        exit(EXIT_FAILURE);
-    }
-
-    // 创建 epoll 实例
-    epoll_fd = epoll_create1(0);
-    if (epoll_fd == -1) {
-        perror("Error creating epoll");
-        exit(EXIT_FAILURE);
-    }
-
-    // 添加监听套接字到 epoll 实例中
-    event.events = EPOLLIN;
-    event.data.fd = listen_sock;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &event) == -1) {
-        perror("Error adding listen socket to epoll");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Server started. Listening for connections...\n");
+    add_listenfd(listenfd, epollfd);
 
     while (1) {
-        // 等待事件发生
-        event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        event_count = epoll_wait(epollfd, events, MAX_EVENTS, -1);
         if (event_count == -1) {
             perror("Error waiting for events");
             exit(EXIT_FAILURE);
         }
 
-        // 处理所有已就绪的事件
-        for (i = 0; i < event_count; ++i) {
-            if (events[i].data.fd == listen_sock) {
-                // 有新的连接请求
-                client_len = sizeof(client_addr);
-                conn_sock = accept(listen_sock, (struct sockaddr*)&client_addr, &client_len);
-                if (conn_sock == -1) {
-                    perror("Error accepting connection");
-                    exit(EXIT_FAILURE);
-                }
-                printf("New connection accepted. Client address: %s, port: %d\n",
-                        inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-                // 将新的连接套接字添加到 epoll 实例中
-                event.events = EPOLLIN;
-                event.data.fd = conn_sock;
-                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_sock, &event) == -1) {
-                    perror("Error adding connection socket to epoll");
-                    exit(EXIT_FAILURE);
-                }
-            } else {
-                // 有数据可读
-                int fd = events[i].data.fd;
-                ssize_t bytes_read = read(fd, buffer, BUFFER_SIZE);
-                if (bytes_read == -1) {
-                    perror("Error reading from socket");
-                    exit(EXIT_FAILURE);
-                }
-
-                if (bytes_read == 0) {
-                    // 连接已关闭
-                    printf("Connection closed. Socket %d\n", fd);
-                    close(fd);
-                } else {
-                    // 打印接收到的数据
-                    buffer[bytes_read] = '\0';
-                    printf("Received data from socket %d: %s", fd, buffer);
-
-                    // 可选：回送数据给客户端
-                    write(fd, buffer, strlen(buffer));
-                }
+        for(i = 0; i < event_count; i++) {
+            flow = (struct flow *)events[i].data.ptr;
+            fd = flow->fd;
+            type = flow->type;
+            if (fd == listenfd)
+                add_flow(listenfd, epollfd);
+            else if (type == CLIENT) {
+                client_event_handle(fd, epollfd, &events[i]);
+            }
+            else if (type == SERVER) {
+                server_event_handle(fd, epollfd, &events[i]);
             }
         }
     }
+}
 
-    // 关闭监听套接字和 epoll 实例
-    close(listen_sock);
-    close(epoll_fd);
+void add_listenfd(int listenfd, int epollfd)
+{
+    struct epoll_event event;
+    flow *flow;
+    event_init(&event, flow, NULL, EPOLLIN, listenfd, LISTENER, 0);
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listenfd, &event) == -1) {
+        perror("Error adding listen socket to epoll");
+        exit(EXIT_FAILURE);
+    }
+    printf("listen fd added: %d\n", listenfd);
+}
 
-    return 0;
+void event_init(struct epoll_event* event, flow *flow, struct flow *peer_flow, int events, int fd, int type, int peer_fd)
+{
+   flow = (struct flow *)malloc(sizeof(flow));
+   flow->fd = fd;
+   flow->type = type;
+   flow->peer_fd = peer_fd;
+   flow->peer_flow = peer_flow;
+   event->events = events;
+   event->data.ptr = flow;
+}
+
+void add_flow(int listenfd, int epollfd)
+{
+    int clientfd;
+    socklen_t clientlen;
+    struct sockaddr_storage clientaddr;
+    struct epoll_event event;
+    flow *flow;
+    clientlen = sizeof(struct sockaddr_storage);
+    clientfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+
+    event_init(&event, flow, NULL, EPOLLIN, clientfd, CLIENT, 0);
+
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientfd, &event) == -1) {
+        perror("Error adding client socket to epoll");
+        exit(EXIT_FAILURE);
+    }
+    printf("new client added: %d\n", clientfd);
+}
+
+void client_event_handle(int clientfd, int epollfd, struct epoll_event *client_event)
+{
+    printf("client triggered : %d\n", clientfd);
+    char *user_request_hdr[MAXLINE];
+    int hdr_idx;
+    int serverfd;
+    struct epoll_event server_event;
+    flow *flow, *peer_flow;
+    peer_flow = client_event->data.ptr;
+    serverfd = handle_client(clientfd, user_request_hdr, &hdr_idx);
+    if (serverfd == ERROR) { /* EOF detected */
+        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, clientfd, NULL) == -1) {
+            perror("Error deleting client socket from epoll");
+            exit(EXIT_FAILURE);
+        }
+        Close(clientfd);
+    }
+
+    event_init(&server_event, flow, peer_flow, EPOLLIN, serverfd, SERVER, clientfd);
+
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serverfd, &server_event) == -1) {
+        perror("Error adding server socket to epoll");
+        exit(EXIT_FAILURE);
+    }
+    send_request(serverfd, user_request_hdr, hdr_idx);
+    printf("new server added: %d\n", serverfd);
+
+}
+
+void server_event_handle(int serverfd, int epollfd, struct epoll_event *event)
+{
+    int clientfd;
+    flow *flow, *peer_flow;
+    printf("server triggered : %d\n", serverfd);
+    flow = (struct flow *)event->data.ptr;
+    peer_flow = flow->peer_flow;
+    clientfd = flow->peer_fd;
+    handle_response(serverfd, clientfd);
+    delete_flow(epollfd, serverfd, flow);
+    delete_flow(epollfd, clientfd, peer_flow);
+}
+
+void delete_flow(int epollfd, int fd, flow *flow)
+{
+    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL) == -1) {
+            perror("Error deleting socket from epoll");
+            exit(EXIT_FAILURE);
+    }
+    Close(fd);
+    free(flow);
+    printf("deleted: %d\n", fd);
 }

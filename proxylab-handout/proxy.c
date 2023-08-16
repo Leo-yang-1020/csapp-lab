@@ -27,7 +27,10 @@ int main(int argc, char **argv)
     }
     #endif
     /* Select implemented */
-    loop(listenfd);
+    //loop(listenfd);
+
+    /* Epoll implemented*/
+    epoll_loop(listenfd);
 }
 
 /*
@@ -89,6 +92,7 @@ int handle_client(int fd, char **user_request_hdr, int *request_idx)
     for (int i = 0; i < *request_idx; i++) {
         printf("%s", user_request_hdr[i]);
     }
+    printf("host:%s, port:%s\n", host, port);
     serverfd = connect_to_srv(host, port);
     return serverfd;
 }

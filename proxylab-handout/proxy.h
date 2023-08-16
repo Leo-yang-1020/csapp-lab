@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <time.h>
+#include <sys/epoll.h>
 #include "csapp.h"
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -30,6 +31,13 @@ typedef struct { /* Represents a pool of connected descriptors */
     rio_t serverrio[FD_SETSIZE]; /* Set of active buffers of server*/
 } pool;
 
+typedef struct {
+    int fd;
+    int type;
+    int peer_fd;
+    struct flow *peer_flow;
+} flow;
+
 extern void doit(int fd);
 extern void  constct_req(rio_t *rp, char *user_request_hdr[], int *idx, char *host, char *port);
 extern int constct_reqline(rio_t *rp, char *user_request_hdr[], int *idx, int fd);
@@ -53,4 +61,14 @@ extern void add_client(int connfd, pool *p);
 extern void check_clients(pool *p);
 extern void close_cli_conn(int fd , pool *pool, int idx);
 extern void close_srv_conn(int fd , pool *pool, int idx);
+
+extern int epoll_loop(int listenfd);
+extern void add_listenfd(int listenfd, int epollfd);
+extern void add_flow(int listenfd, int epollfd);
+extern void client_event_handle(int clientfd, int epollfd, struct epoll_event *client_event);
+extern void server_event_handle(int serverfd, int epollfd, struct epoll_event *event);
+extern void delete_flow(int epollfd, int fd, flow *flow);
+extern void event_init(struct epoll_event* event, flow *flow, struct flow *peer_flow, int events, int fd, int type, int peer_fd);
+
+
 

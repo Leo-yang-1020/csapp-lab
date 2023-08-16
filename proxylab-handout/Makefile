@@ -16,14 +16,17 @@ csapp.o: csapp.c csapp.h
 select.o: csapp.h proxy.h select.c
 	$(CC) $(CFLAGS) -c select.c
 
+epoll.o: csapp.h proxy.h epoll.c
+	$(CC) $(CFLAGS) -c epoll.c
+
 proxy.o: proxy.c csapp.h proxy.h
 	$(CC) $(CFLAGS) -c proxy.c
 
 test_client.o: test_client.c csapp.h
 	$(CC) $(CFLAGS) -c test_client.c
 
-proxy: proxy.o csapp.o select.o
-	$(CC) $(CFLAGS) proxy.o csapp.o select.o -o proxy $(LDFLAGS)
+proxy: proxy.o csapp.o select.o epoll.o
+	$(CC) $(CFLAGS) proxy.o csapp.o select.o epoll.o -o proxy $(LDFLAGS)
 
 test_client: test_client.o csapp.o
 	$(CC) $(CFLAGS) test_client.o csapp.o -o test_client $(LDFLAGS)
